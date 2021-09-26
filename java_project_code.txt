@@ -1,0 +1,899 @@
+/*Server.java*/
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public class Server {
+	final int serverPort = 5000;
+	ServerSocket serverSocket;
+	ArrayList<ClientManageThread> ClientList;
+	Socket socket;
+	ExecutorService executorService;
+
+	String command = new String(" !현인원  /  !금지어  /  to (귓속말)");
+
+	String fbl[] = { "바보", "멍청이", "놈"};
+
+	public Server() {
+		try {
+			serverSocket = new ServerSocket();
+			String serverAddress = InetAddress.getLocalHost().getHostAddress();
+			String serverName = InetAddress.getLocalHost().getHostName();
+			serverSocket.bind(new InetSocketAddress(serverAddress, serverPort));
+			System.out.println("Name : " + serverName + " / Address : " + serverAddress + " / Port : " + serverPort
+					+ " / [Server Binding!]\n");
+
+			ClientList = new ArrayList<>();
+			executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+
+			while (true) {
+				socket = serverSocket.accept();
+				ClientManageThread cmt = new ClientManageThread();
+			}
+		} catch (IOException e) {
+			try {
+				if (serverSocket != null && !serverSocket.isClosed()) {
+					serverSocket.close();
+				}
+				if (executorService != null && !executorService.isShutdown()) {
+					executorService.shutdown();
+				}
+				ClientList.clear();
+				System.out.println("문제 발생으로 서버 종료...");
+			} catch (IOException ex) {
+			}
+		}
+	}
+
+	// Inner Class
+	class ClientManageThread implements Runnable {
+
+		String nickName = null;
+		BufferedReader reader = null;
+		PrintWriter writer = null;
+
+		public ClientManageThread() {
+			try {
+
+				reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+				writer = new PrintWriter(socket.getOutputStream(), true);
+
+				clientNicknameCheck(); // 닉네임 중복체크
+
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+		}
+
+		// 닉네임 중복 체크 메소드
+		public void clientNicknameCheck() {// 닉네임 체크, 동기화
+			try {
+				while (this.getnickName() == null) {
+					String tempNickname = reader.readLine();
+					this.setnickName(tempNickname);
+					synchronized (ClientList) {
+						for (ClientManageThread cmt : ClientList) {
+							if (!(cmt.equals(this)) && cmt.getnickName() != null
+									&& cmt.getnickName().equals(tempNickname)) {
+								this.setnickName(null);
+								writer.println("중복 있음!");
+								writer.flush();
+								break;
+							}
+						}
+					}
+					if (this.getnickName() != null) {
+						writer.println("입장 완료");
+						writer.flush();
+						ClientList.add(this);
+						executorService.submit(this);
+					}
+				}
+			} catch (Exception e) {	}
+		}
+
+		@Override
+		public void run() {
+			try {
+				Thread.sleep(300);
+				broadcast(nickName + "님이 입장했습니다!");
+
+				while (true) {
+					// request : 입력한 텍스트를 저장, 명령어에 맞추어 변환, 및 출력용
+					String request = reader.readLine();
+					request = xout(request);// 금지어 체크
+					String[] tmpstr = request.split(" ");
+
+					try {
+						if (tmpstr[0].equals("!현인원")) {
+							send(checkHowMany());
+						} else if (tmpstr[0].equals("to")) {
+							tmpstr = request.split(" ", 3);
+							// tmpstr 0: 명령어, 1: 보낼사람, 2: 내용
+							// <<<<<<<<<<<<<<<<<<<<<
+							checkhide(request, tmpstr);
+
+							// 귓 메소트
+						} else if (tmpstr[0].equals("!금지어")) {
+							showForbidden();
+						} else if (tmpstr[0].equals("!명령어")) {
+							showCommand();
+						} else {
+							broadcast(this.getnickName()+" : "+request);
+						}
+					} catch (Exception ee) {
+						send("올바른 명령어를 입력하세요.");
+					}
+				}
+
+			} catch (Exception e) {
+				String alertNickname = this.getnickName();
+				removeClient();
+				broadcast(alertNickname + "님이 퇴장했습니다.");
+				// 스레드풀에선 스레드 종료 알아서 처리
+			}
+		}
+
+		// 귓말 메소드
+		public void checkhide(String data, String[] tmp) {
+			// 나한테 보내준것
+			send("(" + tmp[1] + ") 에게 :" + tmp[2]);
+			// 상대한테 보내야하는것
+			synchronized (ClientList) {
+				for (ClientManageThread cmt : ClientList) {
+					if (tmp[1].equals(cmt.getnickName())) {
+						cmt.send("(" + this.getnickName() + ") 의 귓속말 :" + tmp[2]);
+					}
+				}
+			}
+		}
+
+		// 닉네임 반환
+		public String getnickName() {
+			return nickName;
+		}
+
+		// 닉네임 설정
+		public void setnickName(String nickName) {
+			this.nickName = nickName;
+		}
+
+		// send(echo)
+		public void send(String data) {
+			writer.println(data);
+			writer.flush();
+		}
+
+		// 리스트에서 제거 메소드
+		public void removeClient() {
+			synchronized (ClientList) {
+				ClientList.remove(this);
+			}
+		}
+
+		// 브로드캐스트
+		public void broadcast(String data) {
+			synchronized (ClientList) {
+				for (ClientManageThread cmt : ClientList) {
+					cmt.send(data);
+				}
+			}
+		}
+
+		// 금지어체크 해주기
+		public String xout(String data) {
+			for (int i = 0; i < fbl.length; i++) {
+				data = data.replace(fbl[i], "금지어");
+			}
+			return data;
+		}
+
+		// 현인원 체크 메소드 , 동기화 필요
+		public String checkHowMany() {
+			Integer count;
+			String countList;
+			synchronized (ClientList) {
+				count = ClientList.size();
+				countList = new String("[ Server ] 현인원 : " + count.toString() + "명\n");
+				for (ClientManageThread cmt : ClientList) {
+					countList = countList.concat("\t"+cmt.getnickName() + "\n");
+				}
+			}
+			return countList;
+		}
+
+		// 금지어 메소드
+		public void showForbidden() {
+			String fb = new String();
+			for (int i = 0; i < fbl.length; i++) {
+				fb = fb.concat(fbl[i])+" ";
+			}
+			writer.println("[ Server ] "+fb+"\n");
+			writer.flush();
+		}
+
+		// 도움말 메소드 , 동기화 필요 x
+		public void showCommand() {
+			send("[ Server ] " + command+"\n"); // !명령어이면 호출?
+		}
+	}
+
+	public static void main(String[] args) {
+		new Server();
+	}
+}
+
+/*Client.java*/
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.PrintWriter;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+
+import javax.swing.JOptionPane;
+import javax.swing.JScrollBar;
+import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
+import javax.swing.JTextField;
+
+public class Client implements Runnable {
+
+	String serverIP="203.241.228.44";
+	final int serverPort = 5000;
+	String nickName;
+	Socket socket;
+	BufferedReader clientReader;
+	PrintWriter clientWriter;
+	Thread th;
+	JTextArea txt;
+	JTextField usertxt;
+	JScrollPane scrolltxt;
+	// GUI.test 만든이 : 김동훈
+	// 설명 : Client >> GUI 채팅 넘겨줄때, 보
+
+	public Client() {
+		try {
+			{
+				ServerSocket se =new ServerSocket();
+			serverIP=InetAddress.getLocalHost().getHostAddress();
+			}
+			
+
+			socket = new Socket(serverIP, serverPort);
+			// socket.connect(new InetSocketAddress(serverIP, serverPort));
+
+			InputStream is = socket.getInputStream();
+			InputStreamReader isr = new InputStreamReader(is);
+			clientReader = new BufferedReader(isr);
+
+			OutputStream os = socket.getOutputStream();
+			clientWriter = new PrintWriter(os, true);
+
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+
+	// sendGUIname : 만든이 김동훈
+	// 설명 :GUI >> Client (이름중복 체크 전용)
+	// sendGUIChatting : 만든이 김동훈
+	// 설명 :GUI >> Client (입력한 채팅 전송)
+	// sendServerChatting : 만든이 김동훈
+	// 설명 :Client >> GUI (채팅 전송 목적)
+
+	// getGUIInterface
+	public String sendNick() {
+		return nickName;
+	}
+
+	@SuppressWarnings("finally")
+	public String sendGUIname(String GUIname) {
+		clientWriter.println(GUIname);
+		String reply = "ServerBoom";
+		try {
+			reply = clientReader.readLine();
+		} catch (Exception ee) {
+			reply = "ServerBoom";
+		} finally {
+			if (reply.equals("입장 완료")) {
+				th = new Thread(this);
+				th.start();
+			}
+			return reply;
+		}
+	}
+
+	public void sendGUIChatting() {
+		clientWriter.println(usertxt.getText());
+	}
+
+	public void sendServerChatting(String reply) {
+		// 이걸 GUI한테 실시간으로 넘겨줘야하는데 어떻게 넘겨주누?
+		String allText = txt.getText() + reply+"\n";
+		txt.setText(allText);
+		scrolltxt.getVerticalScrollBar().setValue(scrolltxt.getVerticalScrollBar().getMaximum());
+	}
+
+	public void getGUIInterface(JTextArea txt, JTextField usertxt,JScrollPane scrolltxt) {
+		// 복사가 되어버리는 것인가
+		this.txt = txt;
+		this.usertxt = usertxt;
+		this.scrolltxt = scrolltxt;
+	}
+
+	public void exitClient() {
+		try {
+			socket.close();
+		} catch (Exception ee) {
+
+		}
+
+	}
+
+	@Override
+	public void run() {
+		try {
+			while (true) {
+				String reply = clientReader.readLine(); // 서버로부터 온 메시지
+				sendServerChatting(reply);
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+			JOptionPane.showMessageDialog(null, "에러발생.", "경고", JOptionPane.WARNING_MESSAGE);
+		} finally {
+			try {
+				if (socket != null && !socket.isClosed()) {
+					socket.close();
+					// 종료시 처리
+				}
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+		}
+	}
+
+}
+
+/*GUI*/
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.FlowLayout;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.awt.event.KeyEvent;
+import java.awt.event.KeyListener;
+import java.awt.event.MouseEvent;
+import java.awt.event.MouseListener;
+import java.awt.event.WindowEvent;
+import java.awt.event.WindowListener;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
+import java.util.Locale;
+
+import javax.swing.JButton;
+import javax.swing.JDialog;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JMenu;
+import javax.swing.JMenuBar;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
+import javax.swing.JTextField;
+import javax.swing.border.EmptyBorder;
+import javax.swing.event.MenuEvent;
+import javax.swing.event.MenuListener;
+
+public class GUI {
+	// _1
+	Client CLCL = null;
+
+	class Start extends JFrame {
+		private JPanel contentPane;
+		private JTextField textField;
+
+		Start() {
+			super("저항기 팀프");
+			CLCL = new Client();
+			setResizable(false);
+			setLocation(100, 100);
+			setSize(300, 300);
+			setLocationRelativeTo(null);
+			JPanel panel = new JPanel();
+			panel.setBackground(Color.YELLOW);
+			getContentPane().add(panel, BorderLayout.CENTER);
+			setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+
+			contentPane = new JPanel();
+			contentPane.setBorder(new EmptyBorder(5, 5, 5, 5));
+			contentPane.setLayout(new BorderLayout(0, 0));
+			setContentPane(contentPane);
+
+			JPanel panel1 = new JPanel();
+			panel1.setLayout(null);
+			panel1.setBackground(Color.YELLOW);
+			contentPane.add(panel1, BorderLayout.CENTER);
+
+			JLabel lblNewLabel = new JLabel("닉네임");// 닉네임
+			lblNewLabel.setSize(76, 24);
+			lblNewLabel.setLocation(14, 56);
+
+			panel1.add(lblNewLabel);
+			String nickalert = "닉네임을 입력하세요!";
+			textField = new JTextField(nickalert);
+			textField.setBounds(60, 56, 179, 24);
+			panel1.add(textField);
+			textField.setColumns(10);
+			// 텍스트부분 초기화1/3
+			textField.addKeyListener(new KeyListener() {
+				@Override
+				public void keyTyped(KeyEvent e) {
+
+				}
+
+				@Override
+				public void keyReleased(KeyEvent e) {
+
+				}
+
+				@Override
+				public void keyPressed(KeyEvent e) {
+					if (nickalert.equals(((JTextField) e.getSource()).getText())) {
+						((JTextField) e.getSource()).setText("");
+					}
+				}
+			});
+			// 텍스트부분 초기화2/3
+			textField.addMouseListener(new MouseListener() {
+				@Override
+				public void mouseReleased(MouseEvent e) {
+
+				}
+
+				@Override
+				public void mousePressed(MouseEvent e) {
+					if (nickalert.equals(((JTextField) e.getSource()).getText())) {
+						((JTextField) e.getSource()).setText("");
+					}
+				}
+
+				@Override
+				public void mouseExited(MouseEvent e) {
+
+				}
+
+				@Override
+				public void mouseEntered(MouseEvent e) {
+
+				}
+
+				@Override
+				public void mouseClicked(MouseEvent e) {
+
+				}
+			});
+
+			JButton btnNewButton = new JButton("입장하기");
+			btnNewButton.setBounds(14, 167, 105, 27);
+			// 입장하기 버튼 3/3
+			btnNewButton.addMouseListener(new MouseListener() {
+
+				@Override
+				public void mouseReleased(MouseEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void mousePressed(MouseEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void mouseExited(MouseEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void mouseEntered(MouseEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void mouseClicked(MouseEvent e) {
+					String str = Start.this.textField.getText();
+					if (str.equals(nickalert)) {
+						Start.this.textField.setText("");
+						str = "";
+					}
+					if (str.length() <= 0) {
+						JOptionPane.showMessageDialog(null, "닉네임이 비어있습니다!", "입장하기", JOptionPane.WARNING_MESSAGE);
+					} else {
+
+						// by 동훈
+						// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+						try {
+							String status = CLCL.sendGUIname(str);
+							if (status.equals("ServerBoom")) {
+								// tempCl.exitClient();
+								JOptionPane.showMessageDialog(null, "에러", "경고", JOptionPane.WARNING_MESSAGE);
+
+							} else if (status.equals("중복 있음!")) {
+								// tempCl.exitClient();
+								JOptionPane.showMessageDialog(null, "중복된 닉네임 존재합니다!", "입장하기",
+										JOptionPane.WARNING_MESSAGE);
+
+							} else if (status.equals("입장 완료")) {
+								// Cl=tempCl;
+								Start.this.setVisible(false);
+								GUI.test fra = new test(str);
+								fra.setVisible(true);
+								CLCL.getGUIInterface(fra.textArea1, fra.textArea_1,fra.scrollPane);
+							}
+
+						} catch (Exception ee) {
+							ee.printStackTrace();
+
+						}
+					}
+				}
+			});
+
+			panel1.add(btnNewButton);
+			JButton btnNewButton_1 = new JButton("종료하기");
+			btnNewButton_1.addActionListener(new ActionListener() {
+
+				@Override
+				public void actionPerformed(ActionEvent e) {
+					// TODO Auto-generated method stub
+
+					int result = JOptionPane.showConfirmDialog(null, "프로그램 종료하시겠습니까?", "종료하기",
+							JOptionPane.YES_NO_OPTION);
+					if (result == JOptionPane.NO_OPTION) {
+						
+					} 
+					else if (result == JOptionPane.YES_OPTION) {
+						System.exit(0);
+					} else {
+
+					}
+
+				}
+			});
+			btnNewButton_1.setBounds(153, 167, 105, 27);
+			panel1.add(btnNewButton_1);
+
+			this.addWindowListener(new WindowListener() {
+
+				@Override
+				public void windowOpened(WindowEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void windowIconified(WindowEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void windowDeiconified(WindowEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void windowDeactivated(WindowEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void windowClosing(WindowEvent e) {// 윈도우 창 닫기 설정
+					// TODO Auto-generated method stub
+					int result = JOptionPane.showConfirmDialog(null, "프로그램 종료하시겠습니까?", "종료하기",
+							JOptionPane.YES_NO_OPTION);
+					if (result == JOptionPane.NO_OPTION) {
+						
+					} else if (result == JOptionPane.YES_OPTION) {
+						System.exit(0);
+					} else {
+
+					}
+				}
+
+				@Override
+				public void windowClosed(WindowEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void windowActivated(WindowEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+			});// 윈도우 이벤트 등록
+		}
+	}
+
+// _2
+
+	class Help extends JDialog {
+
+		private final JPanel contentPanel = new JPanel();
+
+		/**
+		 * Create the dialog.
+		 */
+		public Help() {
+			setBounds(100, 100, 450, 600);
+			getContentPane().setLayout(new BorderLayout());
+			contentPanel.setLayout(null);
+			contentPanel.setBorder(new EmptyBorder(5, 5, 5, 5));
+			this.setTitle("도움말");
+			this.setResizable(false);
+			getContentPane().add(contentPanel, BorderLayout.CENTER);
+			{
+				JTextArea textArea = new JTextArea();
+				textArea.setSize(415, 500);
+				textArea.setLocation(5, 5);
+				textArea.setEditable(false);
+				contentPanel.add(textArea);
+				String help = new String("\n [ !명령어 를 입력하면 명령어를 조회할 수 있음. ]\n\n" + " - " + "!현인원 : 현재 방에 있는 인원 수와 닉네임 조회\n\n"
+						+ " - !금지어 : 금지어 목록 조회(사용하면 (금지어) 처리)\n\n" + " - to(귓속말) : to 닉네임 대화내용으로 대상에게만 채팅");
+				textArea.setText(help);
+			}
+			{
+				JPanel buttonPane = new JPanel();
+				buttonPane.setLayout(new FlowLayout(FlowLayout.RIGHT));
+				getContentPane().add(buttonPane, BorderLayout.SOUTH);
+				{
+					JButton cancelButton = new JButton("확인");
+					cancelButton.setActionCommand("Cancel");
+					cancelButton.addActionListener(new ActionListener() {
+
+						@Override
+						public void actionPerformed(ActionEvent e) {
+							// TODO Auto-generated method stub
+							dispose();
+						}
+					});
+					buttonPane.add(cancelButton);
+				}
+			}
+		}
+	}
+
+//_3
+	class Timeth extends JLabel implements Runnable {
+		SimpleDateFormat format1 = new SimpleDateFormat("yyyy-MM-dd  HH:mm:ss  ");
+		Calendar time; // = Calendar.getInstance();
+
+		public Timeth() {
+			super();
+			Thread th = new Thread(this);
+			th.start();
+		}
+
+		@Override
+		public void run() {
+			// TODO Auto-generated method stub
+			while (true) {
+				time = Calendar.getInstance(Locale.KOREA);
+				int hour = time.get(Calendar.HOUR_OF_DAY);
+				int min = time.get(Calendar.MINUTE);
+				int sec = time.get(Calendar.SECOND);
+				String format_time1 = format1.format(time.getTime());
+				String nowtime = hour + ":" + min + ":" + sec;
+				this.setText(format_time1);
+				// time.clear();//이거 넣으면 000으로 뜸
+				try {
+					Thread.sleep(10);// 혹시나 생길 과부화 생각해서 휴식 시간 넣어줌 크이 4대보험
+
+				} catch (Exception e) {
+					return;
+				}
+			}
+		}
+	}// 시간 스래드
+
+	public class test extends JFrame {
+		private JPanel contentPane;
+		public JTextArea textArea1 = new JTextArea("");
+		JTextField textArea_1 = null;
+		JScrollPane scrollPane=null;
+		
+
+		public test(String strt) {
+			setResizable(false);
+			setBounds(100, 100, 290, 500);
+			setLocationRelativeTo(null);
+			setTitle("저항기 팀프");// 플젝트 이름
+			setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+			getContentPane().setLayout(null);
+			JMenuBar menuBar = new JMenuBar();
+			setJMenuBar(menuBar);
+
+			Timeth lblNewLabel = new Timeth();
+			menuBar.add(lblNewLabel);
+			
+			final GUI.Help dialoghelp = new Help();
+			JMenu mnNewMenu_2 = new JMenu("도움말");
+			mnNewMenu_2.setToolTipText("명령어 및 프로그램 사용법 안내");
+			mnNewMenu_2.addMenuListener(new MenuListener() {
+
+				@Override
+				public void menuSelected(MenuEvent e) {
+					dialoghelp.setVisible(true);
+
+				}
+
+				@Override
+				public void menuDeselected(MenuEvent e) {
+					// TODO Auto-generated method stub
+					dialoghelp.requestFocus();
+				}
+
+				@Override
+				public void menuCanceled(MenuEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+			});
+			menuBar.add(mnNewMenu_2);
+
+			contentPane = new JPanel();
+			contentPane.setBorder(new EmptyBorder(5, 5, 5, 5));
+			setContentPane(contentPane);
+			contentPane.setLayout(null);
+
+			JPanel panel = new JPanel();
+			panel.setBounds(5, 395, 274, 40);
+			contentPane.add(panel);
+			panel.setLayout(null);
+
+			textArea1.setEditable(false);
+			scrollPane = new JScrollPane(textArea1);
+
+			scrollPane.setBounds(5, 5, 274, 350);
+			contentPane.add(scrollPane);
+			
+			// <<<<<<<<<<<<<1선언
+			textArea_1 = new JTextField();
+			textArea_1.setBounds(0, 0, 200, 40);
+			textArea_1.setBackground(Color.GRAY);
+			textArea_1.setEditable(true);
+			textArea_1.addActionListener(new ActionListener() {
+				@Override
+				public void actionPerformed(ActionEvent arg0) {
+					CLCL.sendGUIChatting();//
+					textArea_1.setText(""); // ta_1를 지운다.
+				}
+			});
+
+			// TLqkf
+			textArea_1.setFocusable(true);
+			textArea_1.requestFocus();
+			panel.add(textArea_1);
+
+			
+
+			// 닉네임을
+			JLabel whoami = new JLabel("사용자 : " + strt);
+			whoami.setBounds(5, 360, 274, 30);
+			add(whoami);
+			JButton btnNewButton = new JButton("보내기");// 보내기 버튼
+			btnNewButton.addMouseListener(new MouseListener() {
+
+				@Override
+				public void mouseReleased(MouseEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void mousePressed(MouseEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void mouseExited(MouseEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void mouseEntered(MouseEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void mouseClicked(MouseEvent e) {
+					CLCL.sendGUIChatting();// Client에 함수 호출 왜 터지냐???
+					textArea_1.setText(""); // ta_1를 지운다.
+			
+				}// 대충 여기에 소스 넣어줘
+			});
+			btnNewButton.setBounds(200, 0, 75, 40);
+
+			panel.add(btnNewButton);
+			this.addWindowListener(new WindowListener() {
+
+				@Override
+				public void windowOpened(WindowEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void windowIconified(WindowEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void windowDeiconified(WindowEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void windowDeactivated(WindowEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void windowClosing(WindowEvent e) {// 윈도우 창 닫기 설정
+					// TODO Auto-generated method stub
+					int result = JOptionPane.showConfirmDialog(null, "프로그램 종료하시겠습니까?", "종료하기",
+							JOptionPane.YES_NO_OPTION);
+					if (result == JOptionPane.NO_OPTION) {
+						
+					} else if (result == JOptionPane.YES_OPTION) {
+						System.exit(0);
+					} else {
+
+					}
+				}
+
+				@Override
+				public void windowClosed(WindowEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+
+				@Override
+				public void windowActivated(WindowEvent e) {
+					// TODO Auto-generated method stub
+
+				}
+			});// 윈도우 이벤트 등록
+		}
+	}
+
+	public static void main(String[] args) {
+		GUI.Start fra1 = new GUI().new Start(); // 이게 원래거
+		fra1.setVisible(true);
+
+		// GUI.test fra2 = new GUI().new test(); // 디버깅용
+		// fra2.setVisible(true);
+
+		// GUI.Look fra3 = new GUI().new Look(); //
+		// fra3.setVisible(true);
+	}
+
+}
